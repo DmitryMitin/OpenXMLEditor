@@ -35,7 +35,6 @@ export const COMMANDS = {
   saveChanges: 'openxmleditor.saveChanges',
   refreshTree: 'openxmleditor.refreshTree',
   openXmlFile: 'openxmleditor.openXmlFile',
-  formatXML: 'openxmleditor.formatXML',
   showFileInfo: 'openxmleditor.showFileInfo',
   closeOpenXMLFile: 'openxmleditor.closeOpenXMLFile',
 } as const;

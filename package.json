@@ -17,8 +17,7 @@
     "vscode": "^1.100.0"
   },
   "categories": [
-    "Other",
-    "Formatters"
+    "Other"
   ],
   "keywords": [
     "openxml",
@@ -60,11 +59,6 @@
         "command": "openxmleditor.openXmlFile",
         "title": "Open File",
         "icon": "$(file)"
-      },
-      {
-        "command": "openxmleditor.formatXML",
-        "title": "Format XML Content",
-        "category": "OpenXML"
       },
       {
         "command": "openxmleditor.showFileInfo",
@@ -133,29 +127,8 @@
           "when": "view == openxmlStructure && viewItem == openxmlFile",
           "group": "inline"
         }
-      ],
-      "editor/context": [
-        {
-          "command": "openxmleditor.formatXML",
-          "when": "resourceScheme == openxml && resourceExtname =~ /\\.(xml|rels)$/",
-          "group": "OpenXML"
-        }
-      ],
-      "commandPalette": [
-        {
-          "command": "openxmleditor.formatXML",
-          "when": "resourceScheme == openxml && resourceExtname =~ /\\.(xml|rels)$/"
-        }
       ]
     },
-    "keybindings": [
-      {
-        "command": "openxmleditor.formatXML",
-        "key": "ctrl+alt+f",
-        "mac": "cmd+alt+f",
-        "when": "resourceScheme == openxml && editorTextFocus"
-      }
-    ],
     "languages": [
       {
         "id": "xml",

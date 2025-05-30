@@ -7,14 +7,12 @@ import * as os from 'os';
 
 import { OpenXMLTreeDataProvider, OpenXMLTreeItem } from './openXmlTreeProvider';
 import { OpenXMLFileSystemProvider } from './openXmlFileSystem';
-import { XMLFormatter } from './services/xmlFormatter';
 import { COMMANDS, CONTEXT_KEYS, EXTENSION_CONFIG, UI_CONFIG } from './constants';
 import { logger } from './utils/logger';
 import { FileUtils } from './utils/fileUtils';
 
 let treeDataProvider: OpenXMLTreeDataProvider;
 let fileSystemProvider: OpenXMLFileSystemProvider;
-let xmlFormatter: XMLFormatter;
 let openedOpenXMLFiles: Set<string> = new Set(); // Track multiple opened files
 
 // This method is called when your extension is activated
@@ -25,7 +23,6 @@ export function activate(context: vscode.ExtensionContext) {
 	// Initialize providers
 	treeDataProvider = new OpenXMLTreeDataProvider();
 	fileSystemProvider = new OpenXMLFileSystemProvider();
-	xmlFormatter = new XMLFormatter();
 
 	// Register file system provider with detailed logging
 	logger.debug('Registering OpenXML file system provider');
@@ -76,10 +73,6 @@ export function activate(context: vscode.ExtensionContext) {
 		await openXmlFileFromTree(treeItem);
 	});
 
-	const formatXMLCommand = vscode.commands.registerCommand('openxmleditor.formatXML', async () => {
-		await formatCurrentXML();
-	});
-
 	const showFileInfoCommand = vscode.commands.registerCommand('openxmleditor.showFileInfo', async (uri: vscode.Uri) => {
 		await showOpenXMLFileInfo(uri);
 	});
@@ -108,7 +101,6 @@ export function activate(context: vscode.ExtensionContext) {
 		saveChangesCommand,
 		refreshTreeCommand,
 		openXmlFileCommand,
-		formatXMLCommand,
 		showFileInfoCommand,
 		closeOpenXMLFileCommand,
 		openInSystemCommand
@@ -311,115 +303,6 @@ async function openInSystemApplication(uri: vscode.Uri): Promise<void> {
 		
 	} catch (error) {
 		vscode.window.showErrorMessage(`Failed to open file in system application: ${error}`);
-	}
-}
-
-async function formatCurrentXML(): Promise<void> {
-	const activeEditor = vscode.window.activeTextEditor;
-	if (!activeEditor) {
-		vscode.window.showErrorMessage('No active editor found');
-		return;
-	}
-
-	try {
-		const document = activeEditor.document;
-		const text = document.getText();
-		
-		// Enhanced XML file detection
-		const isXMLFile = document.languageId === 'xml' || 
-						  document.uri.scheme === EXTENSION_CONFIG.scheme ||
-						  FileUtils.isXMLFile(document.fileName) ||
-						  FileUtils.isXMLContent(text);
-		
-		if (!isXMLFile) {
-			vscode.window.showWarningMessage('Current file does not appear to be an XML file');
-			return;
-		}
-
-		// Check if file is empty or has no XML content
-		if (!text.trim() || !text.includes('<')) {
-			vscode.window.showWarningMessage('No XML content found to format');
-			return;
-		}
-		
-		// Show progress for large files
-		if (text.length > UI_CONFIG.progressThreshold) {
-			vscode.window.withProgress({
-				location: vscode.ProgressLocation.Notification,
-				title: "Formatting XML...",
-				cancellable: false
-			}, async (progress) => {
-				progress.report({ increment: 50 });
-				const formatted = xmlFormatter.formatXML(text);
-				progress.report({ increment: 100 });
-				return formatted;
-			}).then(async (formatted) => {
-				await applyFormattedText(activeEditor, text, formatted!);
-			});
-		} else {
-			// Format immediately for smaller files
-			const formatted = xmlFormatter.formatXML(text);
-			await applyFormattedText(activeEditor, text, formatted);
-		}
-
-	} catch (error) {
-		logger.error('Failed to format XML', error);
-		vscode.window.showErrorMessage(`Failed to format XML: ${error}`);
-	}
-}
-
-async function applyFormattedText(editor: vscode.TextEditor, originalText: string, formattedText: string): Promise<void> {
-	// Check if formatting actually changed anything
-	if (originalText === formattedText) {
-		vscode.window.showInformationMessage('XML is already properly formatted');
-		return;
-	}
-
-	// Save current selection
-	const originalSelection = editor.selection;
-	
-	// Apply the formatting
-	const edit = new vscode.WorkspaceEdit();
-	const fullRange = new vscode.Range(
-		editor.document.positionAt(0),
-		editor.document.positionAt(originalText.length)
-	);
-	edit.replace(editor.document.uri, fullRange, formattedText);
-	
-	const success = await vscode.workspace.applyEdit(edit);
-	
-	if (success) {
-		// Try to restore cursor position intelligently
-		try {
-			const originalOffset = editor.document.offsetAt(originalSelection.start);
-			const lines = formattedText.split('\n');
-			let newOffset = 0;
-			let targetLine = 0;
-			
-			// Find approximately the same position in formatted text
-			for (let i = 0; i < lines.length && newOffset < originalOffset; i++) {
-				if (newOffset + lines[i].length >= originalOffset) {
-					targetLine = i;
-					break;
-				}
-				newOffset += lines[i].length + 1; // +1 for newline
-				targetLine = i;
-			}
-			
-			// Set cursor to start of the target line
-			const newPosition = new vscode.Position(targetLine, 0);
-			editor.selection = new vscode.Selection(newPosition, newPosition);
-			editor.revealRange(new vscode.Range(newPosition, newPosition), vscode.TextEditorRevealType.InCenter);
-			
-		} catch (positionError) {
-			// Fallback: move to beginning
-			const newPosition = new vscode.Position(0, 0);
-			editor.selection = new vscode.Selection(newPosition, newPosition);
-		}
-		
-		vscode.window.showInformationMessage('XML formatted successfully');
-	} else {
-		vscode.window.showErrorMessage('Failed to apply XML formatting');
 	}
 }
 
