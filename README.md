@@ -23,15 +23,6 @@ Advanced Visual Studio Code extension for viewing, editing, and analyzing OpenXM
 - **Content comparison**: Only syncs when actual content changes
 - **Backup creation**: Automatic backup creation when saving
 
-### 🎨 **XML Formatting**
-- **Smart auto-formatting**: Intelligent XML formatting with proper indentation and structure
-- **Advanced algorithm**: Handles complex XML with CDATA, comments, and nested elements
-- **Syntax highlighting**: Full XML syntax support from other extensions
-- **Smart editing**: Auto-closing tags and brackets from XML extensions
-- **Progress indication**: Shows progress for large files
-- **Cursor preservation**: Maintains approximate cursor position after formatting
-- **Third-party compatibility**: Works with other XML extensions and tools
-
 ## 🚀 Usage
 
 ### Opening an OpenXML File
@@ -47,13 +38,6 @@ Advanced Visual Studio Code extension for viewing, editing, and analyzing OpenXM
 2. The file will open in the editor with syntax highlighting
 3. **Edit the content** like regular text
 4. Changes are **automatically saved** to the original OpenXML file after 1 second
-
-### Formatting XML
-
-1. Open any XML file in the editor
-2. Use **Command Palette** (`Ctrl+Shift+P`) → **"OpenXML: Format XML Content"**
-3. Or use keyboard shortcut: **`Ctrl+Alt+F`** (Windows/Linux) / **`Cmd+Alt+F`** (Mac)
-4. Or right-click in editor → **"Format XML Content"**
 
 ### Opening in Office Applications
 
@@ -85,15 +69,8 @@ All commands are available through Command Palette (`Ctrl+Shift+P`):
 
 - `OpenXML: Open in OpenXML Editor` - Open OpenXML file in editor
 - `OpenXML: Save Changes to OpenXML` - Save all changes
-- `OpenXML: Format XML Content` - Format current XML file with proper indentation
 - `OpenXML: Open in Office Application` - Open file in system Office application
 - `OpenXML: Show File Information` - Show detailed file information
-
-## ⌨️ Keyboard Shortcuts
-
-When editing OpenXML virtual files:
-
-- **`Ctrl+Alt+F`** (Windows/Linux) / **`Cmd+Alt+F`** (Mac) - Format XML with proper indentation
 
 ## 🔧 Interface
 
@@ -202,7 +179,6 @@ npm test
 
 - Large OpenXML files (>50MB) may work slowly
 - Binary data (images) are displayed as Base64
-- Some specific OpenXML elements may require manual formatting
 
 ## 📈 Development Plans
 
