@@ -1,0 +1,191 @@
+{
+  "name": "openxmleditor",
+  "displayName": "OpenXML Editor",
+  "description": "A VS Code extension for viewing and editing OpenXML documents (Word, Excel, PowerPoint)",
+  "version": "0.0.1",
+  "publisher": "Dmitrii-Mitin",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other",
+    "Formatters"
+  ],
+  "keywords": [
+    "openxml",
+    "docx",
+    "xlsx",
+    "pptx",
+    "office",
+    "xml",
+    "zip"
+  ],
+  "activationEvents": [
+    "onLanguage:xml",
+    "onFileSystem:openxml"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "openxmleditor.openFile",
+        "title": "Open in OpenXML Editor",
+        "category": "OpenXML"
+      },
+      {
+        "command": "openxmleditor.openInSystem",
+        "title": "Open in Office Application",
+        "category": "OpenXML"
+      },
+      {
+        "command": "openxmleditor.saveChanges",
+        "title": "Save Changes to OpenXML",
+        "category": "OpenXML"
+      },
+      {
+        "command": "openxmleditor.refreshTree",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "openxmleditor.openXmlFile",
+        "title": "Open File",
+        "icon": "$(file)"
+      },
+      {
+        "command": "openxmleditor.formatXML",
+        "title": "Format XML Content",
+        "category": "OpenXML"
+      },
+      {
+        "command": "openxmleditor.showFileInfo",
+        "title": "Show File Information",
+        "category": "OpenXML"
+      },
+      {
+        "command": "openxmleditor.closeOpenXMLFile",
+        "title": "Close OpenXML File",
+        "icon": "$(close)",
+        "category": "OpenXML"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "openxmlStructure",
+          "name": "OpenXML Structure",
+          "when": "openxmlFileOpen"
+        }
+      ]
+    },
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "openxmleditor.openFile",
+          "when": "resourceExtname =~ /\\.(docx|xlsx|pptx|dotx|xltx|potx)$/",
+          "group": "OpenXML"
+        },
+        {
+          "command": "openxmleditor.openInSystem",
+          "when": "resourceExtname =~ /\\.(docx|xlsx|pptx|dotx|xltx|potx)$/",
+          "group": "OpenXML"
+        },
+        {
+          "command": "openxmleditor.showFileInfo",
+          "when": "resourceExtname =~ /\\.(docx|xlsx|pptx|dotx|xltx|potx)$/",
+          "group": "OpenXML"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "openxmleditor.refreshTree",
+          "when": "view == openxmlStructure",
+          "group": "navigation"
+        },
+        {
+          "command": "openxmleditor.saveChanges",
+          "when": "view == openxmlStructure",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "openxmleditor.openXmlFile",
+          "when": "view == openxmlStructure && viewItem == xmlFile",
+          "group": "inline"
+        },
+        {
+          "command": "openxmleditor.openInSystem",
+          "when": "view == openxmlStructure && viewItem == openxmlFile",
+          "group": "navigation"
+        },
+        {
+          "command": "openxmleditor.closeOpenXMLFile",
+          "when": "view == openxmlStructure && viewItem == openxmlFile",
+          "group": "inline"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "openxmleditor.formatXML",
+          "when": "resourceScheme == openxml && resourceExtname =~ /\\.(xml|rels)$/",
+          "group": "OpenXML"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "openxmleditor.formatXML",
+          "when": "resourceScheme == openxml && resourceExtname =~ /\\.(xml|rels)$/"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "openxmleditor.formatXML",
+        "key": "ctrl+alt+f",
+        "mac": "cmd+alt+f",
+        "when": "resourceScheme == openxml && editorTextFocus"
+      }
+    ],
+    "languages": [
+      {
+        "id": "xml",
+        "aliases": [
+          "XML",
+          "xml"
+        ],
+        "extensions": [
+          ".xml",
+          ".rels"
+        ],
+        "filenames": [],
+        "configuration": "./language-configuration.json"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "20.x",
+    "@types/vscode": "^1.100.0",
+    "@typescript-eslint/eslint-plugin": "^8.31.1",
+    "@typescript-eslint/parser": "^8.31.1",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.5.2",
+    "eslint": "^9.25.1",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@types/yauzl": "^2.10.3",
+    "@types/yazl": "^2.4.6",
+    "yauzl": "^3.2.0",
+    "yazl": "^2.5.1"
+  }
+}
