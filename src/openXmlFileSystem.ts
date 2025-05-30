@@ -16,6 +16,8 @@ interface OpenXMLTempData {
     tempFiles: Map<string, string>; // internal path -> temp file path
     modified: Set<string>;
     watchers: fs.FSWatcher[];
+    sourceFileWatcher?: fs.FSWatcher; // Watch the original OpenXML file for external changes
+    lastModified: number; // Track when the original file was last modified
 }
 
 export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
@@ -197,6 +199,10 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
             this.openXMLFiles.delete(originalPath);
         }
         
+        // Get the current modification time of the source file
+        const sourceStats = fs.statSync(originalPath);
+        const lastModified = sourceStats.mtime.getTime();
+        
         // Create temporary directory for this OpenXML file
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), EXTENSION_CONFIG.tempDirPrefix));
         logger.debug('Created temp directory', { tempDir });
@@ -207,11 +213,15 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
             files: new Map<string, Uint8Array>(),
             tempFiles: new Map<string, string>(),
             modified: new Set<string>(),
-            watchers: []
+            watchers: [],
+            lastModified: lastModified
         };
 
         // Load all files from the OpenXML archive and create temp files
         await this.extractArchiveFiles(originalPath, openXMLData);
+
+        // Set up source file watcher to detect external changes
+        this.setupSourceFileWatcher(openXMLData);
 
         this.openXMLFiles.set(originalPath, openXMLData);
         logger.success('OpenXML file loaded successfully', {
@@ -219,6 +229,172 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
             filesCount: openXMLData.files.size,
             tempFilesCount: openXMLData.tempFiles.size
         });
+    }
+
+    private setupSourceFileWatcher(openXMLData: OpenXMLTempData): void {
+        try {
+            logger.debug('Setting up source file watcher', { path: openXMLData.originalPath });
+            
+            let debounceTimer: NodeJS.Timeout | null = null;
+            
+            openXMLData.sourceFileWatcher = fs.watch(openXMLData.originalPath, (eventType, filename) => {
+                logger.debug('Source file event detected', { 
+                    eventType, 
+                    filename, 
+                    path: openXMLData.originalPath 
+                });
+                
+                // Debounce the file change events
+                if (debounceTimer) {
+                    clearTimeout(debounceTimer);
+                }
+                
+                debounceTimer = setTimeout(async () => {
+                    try {
+                        await this.handleSourceFileChange(openXMLData);
+                    } catch (error) {
+                        logger.error('Failed to handle source file change', error);
+                    }
+                }, SYNC_CONFIG.debounceDelayMs);
+            });
+            
+            openXMLData.sourceFileWatcher.on('error', (error) => {
+                logger.error('Source file watcher error', error, { path: openXMLData.originalPath });
+            });
+            
+            logger.success('Source file watcher set up successfully', { path: openXMLData.originalPath });
+            
+        } catch (error) {
+            logger.error('Failed to set up source file watcher', error, { path: openXMLData.originalPath });
+        }
+    }
+
+    private async handleSourceFileChange(openXMLData: OpenXMLTempData): Promise<void> {
+        try {
+            // Check if the source file still exists
+            if (!fs.existsSync(openXMLData.originalPath)) {
+                logger.warn('Source file was deleted', { path: openXMLData.originalPath });
+                vscode.window.showWarningMessage(
+                    `Source file was deleted: ${path.basename(openXMLData.originalPath)}`
+                );
+                return;
+            }
+            
+            // Check if the file was actually modified
+            const currentStats = fs.statSync(openXMLData.originalPath);
+            const currentModified = currentStats.mtime.getTime();
+            
+            if (currentModified <= openXMLData.lastModified) {
+                logger.debug('Source file not actually modified, ignoring event');
+                return;
+            }
+            
+            logger.info('Source file was modified externally', { 
+                path: openXMLData.originalPath,
+                lastModified: new Date(openXMLData.lastModified),
+                currentModified: new Date(currentModified)
+            });
+            
+            // Check if we have unsaved changes
+            const hasUnsavedChanges = openXMLData.modified.size > 0;
+            
+            if (hasUnsavedChanges) {
+                // Ask user what to do with conflicting changes
+                const result = await vscode.window.showWarningMessage(
+                    `The file "${path.basename(openXMLData.originalPath)}" was modified externally but you have unsaved changes. What would you like to do?`,
+                    {
+                        modal: true,
+                        detail: `Modified files: ${Array.from(openXMLData.modified).join(', ')}`
+                    },
+                    'Reload (Lose Changes)',
+                    'Keep Changes',
+                    'Save First, Then Reload'
+                );
+                
+                switch (result) {
+                    case 'Reload (Lose Changes)':
+                        await this.reloadFromSource(openXMLData);
+                        vscode.window.showInformationMessage('File reloaded from external changes. Local changes were discarded.');
+                        break;
+                        
+                    case 'Keep Changes':
+                        // Update the lastModified time but keep our changes
+                        openXMLData.lastModified = currentModified;
+                        vscode.window.showInformationMessage('Keeping local changes. External changes ignored.');
+                        break;
+                        
+                    case 'Save First, Then Reload':
+                        await this.saveChanges(openXMLData.originalPath);
+                        await this.reloadFromSource(openXMLData);
+                        vscode.window.showInformationMessage('Changes saved, then file reloaded with external changes.');
+                        break;
+                        
+                    default:
+                        // User cancelled - keep current state
+                        break;
+                }
+            } else {
+                // No unsaved changes - safe to reload automatically
+                await this.reloadFromSource(openXMLData);
+                vscode.window.showInformationMessage(
+                    `File "${path.basename(openXMLData.originalPath)}" was updated with external changes.`
+                );
+            }
+            
+        } catch (error) {
+            logger.error('Failed to handle source file change', error);
+            vscode.window.showErrorMessage(`Failed to handle external file changes: ${error}`);
+        }
+    }
+
+    private async reloadFromSource(openXMLData: OpenXMLTempData): Promise<void> {
+        logger.info('Reloading from source file', { path: openXMLData.originalPath });
+        
+        try {
+            // Update last modified time
+            const sourceStats = fs.statSync(openXMLData.originalPath);
+            openXMLData.lastModified = sourceStats.mtime.getTime();
+            
+            // Clear current data
+            openXMLData.files.clear();
+            openXMLData.modified.clear();
+            
+            // Clean up existing temp files
+            for (const [internalPath, tempFilePath] of openXMLData.tempFiles) {
+                try {
+                    if (fs.existsSync(tempFilePath)) {
+                        fs.unlinkSync(tempFilePath);
+                    }
+                } catch (error) {
+                    logger.warn('Failed to delete temp file during reload', error, { tempFilePath });
+                }
+            }
+            openXMLData.tempFiles.clear();
+            
+            // Close existing watchers (except source file watcher)
+            for (const watcher of openXMLData.watchers) {
+                watcher.close();
+            }
+            openXMLData.watchers = [];
+            
+            // Reload archive files
+            await this.extractArchiveFiles(openXMLData.originalPath, openXMLData);
+            
+            logger.success('Successfully reloaded from source', { 
+                path: openXMLData.originalPath,
+                filesCount: openXMLData.files.size
+            });
+            
+            // Notify VS Code that files may have changed
+            this._emitter.fire([{
+                type: vscode.FileChangeType.Changed,
+                uri: vscode.Uri.file(openXMLData.originalPath)
+            }]);
+            
+        } catch (error) {
+            logger.error('Failed to reload from source', error);
+            throw error;
+        }
     }
 
     private async extractArchiveFiles(originalPath: string, openXMLData: OpenXMLTempData): Promise<void> {
@@ -420,7 +596,14 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
         }
         
         try {
-            // Dispose watchers
+            // Close source file watcher
+            if (openXMLData.sourceFileWatcher) {
+                openXMLData.sourceFileWatcher.close();
+                openXMLData.sourceFileWatcher = undefined;
+                logger.debug('Closed source file watcher', { path: openXMLPath });
+            }
+            
+            // Dispose temp file watchers
             openXMLData.watchers.forEach(watcher => watcher.close());
             openXMLData.watchers = [];
             
@@ -502,6 +685,10 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
             fs.unlinkSync(openXMLPath);
             fs.renameSync(tempPath, openXMLPath);
 
+            // Update the last modified time to prevent source watcher from triggering
+            const newStats = fs.statSync(openXMLPath);
+            openXMLData.lastModified = newStats.mtime.getTime();
+
             // Clean up backup
             fs.unlinkSync(backupPath);
 
@@ -524,12 +711,11 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
     }
 
     private async syncAllTempFiles(openXMLData: OpenXMLTempData): Promise<void> {
-        console.log('🔄 Force syncing all temporary files...');
+        logger.progress('Force syncing all temporary files...');
         
         for (const [internalPath, tempFilePath] of openXMLData.tempFiles) {
             try {
                 if (fs.existsSync(tempFilePath)) {
-                    const tempStat = fs.statSync(tempFilePath);
                     const originalContent = openXMLData.files.get(internalPath);
                     
                     if (originalContent) {
@@ -538,29 +724,29 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
                         
                         // Compare content to detect changes
                         if (!Buffer.from(originalContent).equals(updatedContent)) {
-                            console.log(`📝 Detected changes in temp file: ${internalPath}`);
+                            logger.debug('Detected changes in temp file', { internalPath });
                             openXMLData.files.set(internalPath, new Uint8Array(updatedContent));
                             openXMLData.modified.add(internalPath);
                         } else {
-                            console.log(`✅ No changes in temp file: ${internalPath}`);
+                            logger.debug('No changes in temp file', { internalPath });
                         }
                     }
                 } else {
-                    console.log(`⚠️ Temp file not found: ${tempFilePath}`);
+                    logger.warn('Temp file not found', { tempFilePath });
                 }
             } catch (error) {
-                console.error(`❌ Failed to sync temp file ${internalPath}:`, error);
+                logger.error('Failed to sync temp file', error, { internalPath });
             }
         }
         
-        console.log('🔄 Finished syncing temporary files');
+        logger.success('Finished syncing temporary files');
     }
 
     private async autoSave(openXMLPath: string): Promise<void> {
         try {
             await this.saveChanges(openXMLPath);
         } catch (error) {
-            console.error('Auto-save failed:', error);
+            logger.error('Auto-save failed', error);
             vscode.window.showWarningMessage(`Auto-save failed: ${error}`);
         }
     }
@@ -568,8 +754,8 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
     private parseUri(uri: vscode.Uri): { openXMLPath: string; filePath: string } {
         // Parse URI format: openxml:/PresentationName[id]/internal-file-path
         try {
-            console.log('🔍 Parsing URI:', uri.toString());
-            console.log('📋 URI path:', uri.path);
+            logger.debug('Parsing URI', { uri: uri.toString() });
+            logger.debug('URI path', { path: uri.path });
             
             // Remove leading slash and split path
             const pathParts = uri.path.substring(1).split('/');
@@ -587,23 +773,23 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
             const openXMLPath = this.pathMappings.get(readableId);
             
             if (!openXMLPath) {
-                console.error('❌ Readable ID not found in mappings:', readableId);
-                console.log('🗂️ Available mappings:');
-                Array.from(this.pathMappings.entries()).forEach(([id, path], index) => {
-                    console.log(`  ${index + 1}. "${id}" -> "${path}"`);
+                logger.error('Readable ID not found in mappings', { readableId });
+                logger.debug('Available mappings', { 
+                    mappings: Array.from(this.pathMappings.entries()) 
                 });
                 throw new Error(`Readable ID not found: ${readableId}`);
             }
             
-            console.log('✅ Parsed readable URI:');
-            console.log('  📝 Readable ID:', readableId);
-            console.log('  📁 Resolved OpenXML path:', openXMLPath);
-            console.log('  📄 Internal file path:', filePath);
+            logger.success('Parsed readable URI', {
+                readableId,
+                openXMLPath,
+                filePath
+            });
             
             return { openXMLPath, filePath };
             
         } catch (error) {
-            console.error('💥 Failed to parse URI:', uri.toString(), error);
+            logger.error('Failed to parse URI', error, { uri: uri.toString() });
             throw new Error(`Invalid URI format: ${uri.toString()}`);
         }
     }
@@ -613,18 +799,10 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
         // Goal: Tab shows "PresentationName → path/to/file.xml"
         
         // Get the presentation name without extension
-        const presentationName = path.basename(openXMLPath, path.extname(openXMLPath));
+        const presentationName = FileUtils.extractPresentationName(openXMLPath);
         
         // Create a unique identifier for mapping (short and clean)
-        const pathHash = Buffer.from(openXMLPath, 'utf8').toString('base64')
-            .replace(/[/+=]/g, (match) => {
-                switch (match) {
-                    case '/': return '_';
-                    case '+': return '-';
-                    case '=': return '';
-                    default: return match;
-                }
-            }).substring(0, 6); // Very short ID
+        const pathHash = FileUtils.createShortHash(openXMLPath);
         
         // Create a readable identifier
         const readableId = `${presentationName}[${pathHash}]`;
@@ -641,11 +819,12 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
         
         const uri = `openxml:/${readableId}/${cleanFilePath}`;
         
-        console.log('Creating beautiful URI:');
-        console.log('  📁 Presentation:', presentationName);
-        console.log('  📄 File path:', cleanFilePath);
-        console.log('  📋 Tab will show:', `${readableId}/${cleanFilePath}`);
-        console.log('  🔗 Full URI:', uri);
+        logger.debug('Creating beautiful URI', {
+            presentation: presentationName,
+            filePath: cleanFilePath,
+            tabDisplay: `${readableId}/${cleanFilePath}`,
+            fullUri: uri
+        });
         
         return vscode.Uri.parse(uri);
     }
