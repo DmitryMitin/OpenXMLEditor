@@ -1,31 +1,33 @@
 # OpenXML Editor
 
-Advanced Visual Studio Code extension for viewing, editing, and analyzing OpenXML documents (Microsoft Office files: Word, Excel, PowerPoint) directly in the editor without extracting to disk.
+Advanced Visual Studio Code extension for viewing, editing, and analyzing OpenXML documents (Microsoft Office files: Word, Excel, PowerPoint) with temporary file extraction for full compatibility with other XML extensions.
 
 ## ✨ Key Features
 
-### 🌳 **Virtual Structure Tree**
-- **File structure display in sidebar**: View the complete internal structure of OpenXML files
+### 🌳 **File Structure Tree**
+- **Sidebar structure display**: View the complete internal structure of OpenXML files
 - **File navigation**: Open any XML file from the archive with a single click
 - **Size information**: See the size of each file in the archive
 - **Hierarchical display**: Folders and files organized in an intuitive tree structure
 
-### 💾 **Virtual File System**
-- **Edit without extraction**: Modify XML files directly in memory
-- **Auto-save**: Changes are automatically saved back to the original OpenXML file
-- **Change tracking**: See which files have been modified
-- **Backup creation**: Automatic backup creation when saving
+### 💾 **Temporary File System**
+- **Real file extraction**: XML files are extracted to temporary directories as real files
+- **Full XML extension compatibility**: Works seamlessly with all VS Code XML extensions
+- **Automatic synchronization**: Changes to temporary files are automatically synced back
+- **Smart file watchers**: Node.js file watchers with debouncing for reliable change detection
+- **Auto-cleanup**: Temporary files are automatically cleaned up when closing
 
-### 🔄 **Automatic Packaging**
-- **Transparent saving**: All changes are automatically packaged back into OpenXML
-- **Change status**: Status bar shows the number of unsaved changes
-- **Safety**: Create backup copies before saving
+### 🔄 **Advanced Change Tracking**
+- **Multi-layer sync**: Node.js file watchers + VS Code save events
+- **Smart debouncing**: Prevents excessive sync operations
+- **Content comparison**: Only syncs when actual content changes
+- **Backup creation**: Automatic backup creation when saving
 
 ### 🎨 **XML Formatting**
 - **Smart auto-formatting**: Intelligent XML formatting with proper indentation and structure
 - **Advanced algorithm**: Handles complex XML with CDATA, comments, and nested elements
-- **Syntax highlighting**: Full XML syntax support
-- **Smart editing**: Auto-closing tags and brackets
+- **Syntax highlighting**: Full XML syntax support from other extensions
+- **Smart editing**: Auto-closing tags and brackets from XML extensions
 - **Progress indication**: Shows progress for large files
 - **Cursor preservation**: Maintains approximate cursor position after formatting
 - **Third-party compatibility**: Works with other XML extensions and tools
@@ -131,14 +133,20 @@ When editing OpenXML virtual files:
 ## ⚙️ Technical Details
 
 ### Architecture
-- **Virtual File System Provider**: For working with files in memory
+- **Temporary File System**: Extracts XML files to real temporary directories
+- **Multi-layer Sync**: Node.js file watchers + VS Code save events
 - **Tree Data Provider**: For displaying structure in sidebar
-- **Custom URI Scheme**: `openxml://` for virtual files
-- **Auto-save mechanism**: Delayed saving of changes
+- **File System Provider**: For URI handling and file operations
+- **Debounced Auto-save**: Smart saving with change detection
+
+### Sync Mechanisms
+1. **Node.js File Watchers**: Real-time file change detection with debouncing
+2. **VS Code Save Events**: Triggered when user saves documents
 
 ### Dependencies
 - **yauzl**: Reading ZIP archives (OpenXML files are ZIP archives)
 - **yazl**: Creating ZIP archives for saving changes
+- **Node.js fs**: File system operations and watchers
 - **VS Code API**: For editor integration
 
 ### Security

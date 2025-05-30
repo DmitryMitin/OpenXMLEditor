@@ -3,83 +3,56 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
+
 import { OpenXMLTreeDataProvider, OpenXMLTreeItem } from './openXmlTreeProvider';
 import { OpenXMLFileSystemProvider } from './openXmlFileSystem';
+import { XMLFormatter } from './services/xmlFormatter';
+import { COMMANDS, CONTEXT_KEYS, EXTENSION_CONFIG, UI_CONFIG } from './constants';
+import { logger } from './utils/logger';
+import { FileUtils } from './utils/fileUtils';
 
 let treeDataProvider: OpenXMLTreeDataProvider;
 let fileSystemProvider: OpenXMLFileSystemProvider;
+let xmlFormatter: XMLFormatter;
 let openedOpenXMLFiles: Set<string> = new Set(); // Track multiple opened files
-
-interface OpenXMLFileInfo {
-	fileName: string;
-	fileSize: number;
-	fileType: string;
-	createdDate?: Date;
-	modifiedDate?: Date;
-	author?: string;
-	title?: string;
-}
 
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
-	console.log('OpenXML Editor extension is now active!');
+	logger.info('OpenXML Editor extension is now active!');
 
 	// Initialize providers
 	treeDataProvider = new OpenXMLTreeDataProvider();
 	fileSystemProvider = new OpenXMLFileSystemProvider();
+	xmlFormatter = new XMLFormatter();
 
 	// Register file system provider with detailed logging
-	console.log('Registering OpenXML file system provider...');
-	const fsRegistration = vscode.workspace.registerFileSystemProvider('openxml', fileSystemProvider, {
+	logger.debug('Registering OpenXML file system provider');
+	const fsRegistration = vscode.workspace.registerFileSystemProvider(EXTENSION_CONFIG.scheme, fileSystemProvider, {
 		isCaseSensitive: true,
 		isReadonly: false
 	});
 	context.subscriptions.push(fsRegistration);
-	console.log('✅ OpenXML file system provider registered successfully');
-
-	// Track OpenXML documents for better display
-	vscode.workspace.onDidOpenTextDocument(document => {
-		if (document.uri.scheme === 'openxml') {
-			console.log('📄 Opened OpenXML document:', document.uri.toString());
-			
-			// Ensure the document is properly recognized as XML for other extensions
-			const fileName = document.uri.path;
-			if (fileName.endsWith('.xml') || fileName.endsWith('.rels')) {
-				// Force language mode to XML if not already set
-				if (document.languageId !== 'xml') {
-					vscode.languages.setTextDocumentLanguage(document, 'xml').then(() => {
-						console.log('✅ Set language mode to XML for:', fileName);
-					});
-				}
-				
-				// Set additional context variables that other extensions might check
-				vscode.commands.executeCommand('setContext', 'resourceExtname', fileName.endsWith('.rels') ? '.rels' : '.xml');
-				vscode.commands.executeCommand('setContext', 'resourceLangId', 'xml');
-			}
-		}
-	});
-
-	// Track active editor changes to maintain proper context for third-party extensions
-	vscode.window.onDidChangeActiveTextEditor(editor => {
-		if (editor && editor.document.uri.scheme === 'openxml') {
-			const fileName = editor.document.uri.path;
-			if (fileName.endsWith('.xml') || fileName.endsWith('.rels')) {
-				// Refresh context variables when switching to openxml files
-				const fileExtension = fileName.endsWith('.rels') ? '.rels' : '.xml';
-				vscode.commands.executeCommand('setContext', 'resourceExtname', fileExtension);
-				vscode.commands.executeCommand('setContext', 'resourceLangId', 'xml');
-				vscode.commands.executeCommand('setContext', 'resourceScheme', 'openxml');
-				
-				console.log('🔄 Refreshed XML context for active editor:', fileName);
-			}
-		}
-	});
+	logger.success('OpenXML file system provider registered successfully');
 
 	// Register tree data provider
 	const treeRegistration = vscode.window.registerTreeDataProvider('openxmlStructure', treeDataProvider);
 	context.subscriptions.push(treeRegistration);
-	console.log('✅ OpenXML tree data provider registered successfully');
+	logger.success('OpenXML tree data provider registered successfully');
+
+	// Set up document save listener for temp files
+	const documentSaveListener = vscode.workspace.onDidSaveTextDocument(async (document) => {
+		// Check if this is a temp file from our extension
+		const filePath = document.uri.fsPath;
+		const tempDir = os.tmpdir();
+		
+		if (filePath.startsWith(tempDir) && filePath.includes(EXTENSION_CONFIG.tempDirPrefix)) {
+			logger.debug('VS Code saved temp file, changes will be synced via file watcher', { filePath });
+		}
+	});
+	context.subscriptions.push(documentSaveListener);
+	logger.success('Document save listener registered');
 
 	// Test file system provider registration
 	console.log('🧪 Testing file system provider registration...');
@@ -188,24 +161,35 @@ async function saveAllChanges(): Promise<void> {
 	}
 
 	try {
+		console.log('💾 Manual save requested for all OpenXML files');
 		let savedCount = 0;
+		let totalFiles = openedOpenXMLFiles.size;
+		
 		for (const filePath of openedOpenXMLFiles) {
-			if (fileSystemProvider.hasUnsavedChanges(filePath)) {
+			console.log(`💾 Processing save for: ${filePath}`);
+			
+			// Always try to save (this will force sync temp files first)
+			try {
 				await fileSystemProvider.saveChanges(filePath);
 				savedCount++;
+				console.log(`✅ Successfully saved: ${filePath}`);
+			} catch (error) {
+				console.error(`❌ Failed to save ${filePath}:`, error);
+				vscode.window.showErrorMessage(`Failed to save ${path.basename(filePath)}: ${error}`);
 			}
 		}
 		
 		if (savedCount > 0) {
-			vscode.window.showInformationMessage(`Saved changes in ${savedCount} OpenXML file(s)`);
+			vscode.window.showInformationMessage(`Saved ${savedCount} of ${totalFiles} OpenXML file(s)`);
 		} else {
-			vscode.window.showInformationMessage('No unsaved changes found');
+			vscode.window.showInformationMessage('No changes found to save');
 		}
 		
 		// Update tree to reflect saved state
 		treeDataProvider.refresh();
 		
 	} catch (error) {
+		console.error('❌ Save all operation failed:', error);
 		vscode.window.showErrorMessage(`Failed to save changes: ${error}`);
 	}
 }
@@ -227,46 +211,35 @@ async function openXmlFileFromTree(treeItem: OpenXMLTreeItem): Promise<void> {
 		console.log('Opening XML file from tree:', treeItem.fullPath);
 		console.log('OpenXML file:', treeItem.openXMLPath);
 		
-		// Create virtual URI for the file
-		const virtualUri = fileSystemProvider.createUri(treeItem.openXMLPath!, treeItem.fullPath);
-		console.log('Created virtual URI:', virtualUri.toString());
+		// Get the temporary file path instead of creating virtual URI
+		const tempFilePath = fileSystemProvider.getTempFilePath(treeItem.openXMLPath!, treeItem.fullPath);
 		
-		// Open the file in a NEW editor (not replacing current)
-		const document = await vscode.workspace.openTextDocument(virtualUri);
+		if (!tempFilePath) {
+			vscode.window.showErrorMessage(`Temporary file not found for: ${treeItem.fullPath}`);
+			return;
+		}
+		
+		console.log('Opening temporary file:', tempFilePath);
+		
+		// Open the temporary file as a regular file
+		const tempUri = vscode.Uri.file(tempFilePath);
+		const document = await vscode.workspace.openTextDocument(tempUri);
+		
+		// Ensure language mode is set to XML
+		const fileExtension = path.extname(treeItem.fullPath).toLowerCase();
+		if (fileExtension === '.xml' || fileExtension === '.rels') {
+			if (document.languageId !== 'xml') {
+				await vscode.languages.setTextDocumentLanguage(document, 'xml');
+			}
+		}
+		
+		// Open the document in editor
 		const editor = await vscode.window.showTextDocument(document, {
 			preview: false, // Open in new tab, not preview
 			viewColumn: vscode.ViewColumn.Active
 		});
 		
-		// Ensure proper language mode and context for XML files
-		const fileExtension = path.extname(treeItem.fullPath).toLowerCase();
-		if (fileExtension === '.xml' || fileExtension === '.rels') {
-			// Set language mode to XML - this is crucial for other extensions
-			await vscode.languages.setTextDocumentLanguage(document, 'xml');
-			
-			// Set context variables that other XML extensions typically check
-			await vscode.commands.executeCommand('setContext', 'resourceExtname', fileExtension);
-			await vscode.commands.executeCommand('setContext', 'resourceLangId', 'xml');
-			await vscode.commands.executeCommand('setContext', 'resourceScheme', 'openxml');
-			
-			// Also ensure the editor is focused and active for extension detection
-			await vscode.window.showTextDocument(document, {
-				preview: false,
-				preserveFocus: false,
-				viewColumn: editor.viewColumn
-			});
-			
-			// Trigger manual events that might help other extensions detect the file
-			setTimeout(() => {
-				// Fire events that XML extensions might listen to
-				vscode.commands.executeCommand('workbench.action.files.revert');
-				vscode.commands.executeCommand('editor.action.redetectLanguage');
-			}, 100);
-			
-			console.log('✅ XML language mode and contexts set for:', treeItem.fullPath);
-		}
-		
-		console.log('Successfully opened file in new tab:', treeItem.fullPath);
+		console.log('Successfully opened temporary file:', tempFilePath);
 		console.log('Document language ID:', document.languageId);
 		console.log('Document URI scheme:', document.uri.scheme);
 		console.log('Document URI path:', document.uri.path);
@@ -298,6 +271,9 @@ async function closeOpenXMLFile(filePath: string): Promise<void> {
 				return;
 			}
 		}
+		
+		// Clean up temporary files
+		await fileSystemProvider.cleanupTempFiles(filePath);
 		
 		// Remove from opened files
 		openedOpenXMLFiles.delete(filePath);
@@ -349,13 +325,11 @@ async function formatCurrentXML(): Promise<void> {
 		const document = activeEditor.document;
 		const text = document.getText();
 		
-		// Enhanced XML file detection for virtual files
+		// Enhanced XML file detection
 		const isXMLFile = document.languageId === 'xml' || 
-						  document.uri.scheme === 'openxml' ||
-						  document.fileName.endsWith('.xml') || 
-						  document.fileName.endsWith('.rels') ||
-						  text.trim().startsWith('<?xml') ||
-						  text.trim().startsWith('<');
+						  document.uri.scheme === EXTENSION_CONFIG.scheme ||
+						  FileUtils.isXMLFile(document.fileName) ||
+						  FileUtils.isXMLContent(text);
 		
 		if (!isXMLFile) {
 			vscode.window.showWarningMessage('Current file does not appear to be an XML file');
@@ -369,14 +343,14 @@ async function formatCurrentXML(): Promise<void> {
 		}
 		
 		// Show progress for large files
-		if (text.length > 50000) {
+		if (text.length > UI_CONFIG.progressThreshold) {
 			vscode.window.withProgress({
 				location: vscode.ProgressLocation.Notification,
 				title: "Formatting XML...",
 				cancellable: false
 			}, async (progress) => {
 				progress.report({ increment: 50 });
-				const formatted = formatXML(text);
+				const formatted = xmlFormatter.formatXML(text);
 				progress.report({ increment: 100 });
 				return formatted;
 			}).then(async (formatted) => {
@@ -384,11 +358,12 @@ async function formatCurrentXML(): Promise<void> {
 			});
 		} else {
 			// Format immediately for smaller files
-			const formatted = formatXML(text);
+			const formatted = xmlFormatter.formatXML(text);
 			await applyFormattedText(activeEditor, text, formatted);
 		}
 
 	} catch (error) {
+		logger.error('Failed to format XML', error);
 		vscode.window.showErrorMessage(`Failed to format XML: ${error}`);
 	}
 }
@@ -448,147 +423,6 @@ async function applyFormattedText(editor: vscode.TextEditor, originalText: strin
 	}
 }
 
-function formatXML(xml: string): string {
-	try {
-		// Clean up the input
-		let formatted = xml.trim();
-		
-		// Remove all existing whitespace between tags
-		formatted = formatted.replace(/>\s*</g, '><');
-		
-		// Split into array for processing
-		const result: string[] = [];
-		let depth = 0;
-		const indent = '  '; // 2 spaces
-		
-		// Process character by character to build a token stream
-		let i = 0;
-		const tokens: Array<{type: 'tag' | 'text' | 'comment' | 'cdata', content: string}> = [];
-		
-		while (i < formatted.length) {
-			const char = formatted[i];
-			const nextChars4 = formatted.substring(i, i + 4);
-			const nextChars9 = formatted.substring(i, i + 9);
-			
-			// Handle CDATA sections
-			if (nextChars9 === '<![CDATA[') {
-				const cdataEnd = formatted.indexOf(']]>', i);
-				if (cdataEnd !== -1) {
-					tokens.push({
-						type: 'cdata',
-						content: formatted.substring(i, cdataEnd + 3)
-					});
-					i = cdataEnd + 3;
-					continue;
-				}
-			}
-			
-			// Handle comments
-			if (nextChars4 === '<!--') {
-				const commentEnd = formatted.indexOf('-->', i);
-				if (commentEnd !== -1) {
-					tokens.push({
-						type: 'comment',
-						content: formatted.substring(i, commentEnd + 3)
-					});
-					i = commentEnd + 3;
-					continue;
-				}
-			}
-			
-			// Handle tags
-			if (char === '<') {
-				const tagEnd = formatted.indexOf('>', i);
-				if (tagEnd !== -1) {
-					tokens.push({
-						type: 'tag',
-						content: formatted.substring(i, tagEnd + 1)
-					});
-					i = tagEnd + 1;
-					continue;
-				}
-			}
-			
-			// Handle text content
-			let textContent = '';
-			while (i < formatted.length && formatted[i] !== '<') {
-				textContent += formatted[i];
-				i++;
-			}
-			
-			if (textContent.trim()) {
-				tokens.push({
-					type: 'text',
-					content: textContent.trim()
-				});
-			}
-		}
-		
-		// Now process tokens intelligently
-		for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex++) {
-			const token = tokens[tokenIndex];
-			
-			if (token.type === 'comment' || token.type === 'cdata') {
-				result.push(indent.repeat(depth) + token.content);
-			} else if (token.type === 'tag') {
-				const tag = token.content;
-				
-				if (tag.startsWith('<?') || tag.startsWith('<!')) {
-					// XML declaration or DOCTYPE - no indentation change
-					result.push(tag);
-				} else if (tag.startsWith('</')) {
-					// Closing tag - decrease depth first, then add
-					depth = Math.max(0, depth - 1);
-					result.push(indent.repeat(depth) + tag);
-				} else if (tag.endsWith('/>')) {
-					// Self-closing tag - no depth change
-					result.push(indent.repeat(depth) + tag);
-				} else {
-					// Opening tag - check if it's a simple text-only element
-					const isSimpleElement = tokenIndex + 2 < tokens.length &&
-						tokens[tokenIndex + 1].type === 'text' &&
-						tokens[tokenIndex + 2].type === 'tag' &&
-						tokens[tokenIndex + 2].content.startsWith('</');
-					
-					if (isSimpleElement) {
-						// Simple element: <tag>text</tag> - keep on one line
-						const textToken = tokens[tokenIndex + 1];
-						const closingTag = tokens[tokenIndex + 2];
-						
-						result.push(indent.repeat(depth) + tag + textToken.content + closingTag.content);
-						
-						// Skip the next two tokens since we processed them
-						tokenIndex += 2;
-					} else {
-						// Complex element - add tag and increase depth
-						result.push(indent.repeat(depth) + tag);
-						depth++;
-					}
-				}
-			} else if (token.type === 'text') {
-				// Standalone text (not part of a simple element)
-				result.push(indent.repeat(depth) + token.content);
-			}
-		}
-		
-		// Join and clean up
-		return result
-			.filter(line => line.trim()) // Remove empty lines
-			.map(line => line.trimEnd()) // Remove trailing spaces
-			.join('\n');
-			
-	} catch (error) {
-		console.error('Error formatting XML:', error);
-		// Fallback to simple formatting
-		return xml
-			.replace(/>\s*</g, '>\n<')
-			.split('\n')
-			.map(line => line.trim())
-			.filter(line => line)
-			.join('\n');
-	}
-}
-
 async function showOpenXMLFileInfo(uri: vscode.Uri): Promise<void> {
 	try {
 		const filePath = uri.fsPath;
@@ -599,7 +433,7 @@ async function showOpenXMLFileInfo(uri: vscode.Uri): Promise<void> {
 		const fileInfo = {
 			fileName: fileName,
 			fileSize: stats.size,
-			fileType: getFileTypeDescription(fileExt),
+			fileType: FileUtils.getFileTypeDescription(fileExt),
 			createdDate: stats.birthtime,
 			modifiedDate: stats.mtime,
 			hasUnsavedChanges: openedOpenXMLFiles.has(filePath) ? fileSystemProvider.hasUnsavedChanges(filePath) : false,
@@ -617,32 +451,12 @@ async function showOpenXMLFileInfo(uri: vscode.Uri): Promise<void> {
 		panel.webview.html = generateFileInfoHTML(fileInfo);
 
 	} catch (error) {
+		logger.error('Failed to get file information', error);
 		vscode.window.showErrorMessage(`Failed to get file information: ${error}`);
 	}
 }
 
-function getFileTypeDescription(extension: string): string {
-	const types: { [key: string]: string } = {
-		'.docx': 'Microsoft Word Document',
-		'.xlsx': 'Microsoft Excel Spreadsheet',
-		'.pptx': 'Microsoft PowerPoint Presentation',
-		'.dotx': 'Microsoft Word Template',
-		'.xltx': 'Microsoft Excel Template',
-		'.potx': 'Microsoft PowerPoint Template'
-	};
-	return types[extension] || 'OpenXML Document';
-}
-
 function generateFileInfoHTML(fileInfo: any): string {
-	const formatSize = (bytes: number): string => {
-		const sizes = ['B', 'KB', 'MB', 'GB'];
-		if (bytes === 0) {
-			return '0 B';
-		}
-		const i = Math.floor(Math.log(bytes) / Math.log(1024));
-		return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
-	};
-
 	const modifiedFilesHtml = fileInfo.modifiedFiles.length > 0 
 		? `<tr><td>Modified Files</td><td>${fileInfo.modifiedFiles.join('<br>')}</td></tr>`
 		: '';
@@ -671,7 +485,7 @@ function generateFileInfoHTML(fileInfo: any): string {
 				<tr><th>Property</th><th>Value</th></tr>
 				<tr><td>File Name</td><td>${fileInfo.fileName}</td></tr>
 				<tr><td>File Type</td><td>${fileInfo.fileType}</td></tr>
-				<tr><td>File Size</td><td>${formatSize(fileInfo.fileSize)}</td></tr>
+				<tr><td>File Size</td><td>${FileUtils.formatFileSize(fileInfo.fileSize)}</td></tr>
 				<tr><td>Created</td><td>${fileInfo.createdDate?.toLocaleString() || 'Unknown'}</td></tr>
 				<tr><td>Modified</td><td>${fileInfo.modifiedDate?.toLocaleString() || 'Unknown'}</td></tr>
 				<tr><td>Status</td><td class="${fileInfo.hasUnsavedChanges ? 'modified' : 'saved'}">${fileInfo.hasUnsavedChanges ? 'Has unsaved changes' : 'All changes saved'}</td></tr>
@@ -704,6 +518,13 @@ function updateStatusBar(statusBarItem: vscode.StatusBarItem): void {
 
 // This method is called when your extension is deactivated
 export function deactivate() {
-	// Clean up
+	// Clean up all temporary files
+	for (const filePath of openedOpenXMLFiles) {
+		fileSystemProvider.cleanupTempFiles(filePath).catch(error => {
+			console.error('Failed to cleanup temp files during deactivation:', error);
+		});
+	}
+	
+	// Clean up context
 	vscode.commands.executeCommand('setContext', 'openxmlFileOpen', false);
 }

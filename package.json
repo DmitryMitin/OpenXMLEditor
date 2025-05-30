@@ -1,8 +1,8 @@
 {
   "name": "openxmleditor",
   "displayName": "OpenXML Editor",
-  "description": "A VS Code extension for viewing and editing OpenXML documents (Word, Excel, PowerPoint)",
-  "version": "0.0.1",
+  "description": "A VS Code extension for viewing and editing OpenXML documents (Word, Excel, PowerPoint) with temporary file extraction for full XML extension compatibility",
+  "version": "0.2.0",
   "publisher": "Dmitrii-Mitin",
   "engines": {
     "vscode": "^1.100.0"
@@ -159,9 +159,28 @@
           ".rels"
         ],
         "filenames": [],
+        "mimetypes": [
+          "application/xml",
+          "text/xml", 
+          "application/vnd.openxmlformats-package.relationships+xml"
+        ],
         "configuration": "./language-configuration.json"
       }
-    ]
+    ],
+    "configurationDefaults": {
+      "files.associations": {
+        "*.xml": "xml",
+        "*.rels": "xml"
+      },
+      "[xml]": {
+        "editor.wordWrap": "on",
+        "editor.quickSuggestions": {
+          "other": true,
+          "comments": false,
+          "strings": true
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

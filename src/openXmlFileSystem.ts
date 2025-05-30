@@ -3,13 +3,27 @@ import * as yauzl from 'yauzl';
 import * as yazl from 'yazl';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
+
+import { EXTENSION_CONFIG, SYNC_CONFIG, MIME_TYPES } from './constants';
+import { logger } from './utils/logger';
+import { FileUtils } from './utils/fileUtils';
+
+interface OpenXMLTempData {
+    originalPath: string;
+    tempDir: string;
+    files: Map<string, Uint8Array>;
+    tempFiles: Map<string, string>; // internal path -> temp file path
+    modified: Set<string>;
+    watchers: fs.FSWatcher[];
+}
 
 export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
-    private _emitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
+    private readonly _emitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
     readonly onDidChangeFile: vscode.Event<vscode.FileChangeEvent[]> = this._emitter.event;
 
-    private openXMLFiles = new Map<string, { originalPath: string; files: Map<string, Uint8Array>; modified: Set<string> }>();
-    private pathMappings = new Map<string, string>(); // Map short IDs to full paths
+    private readonly openXMLFiles = new Map<string, OpenXMLTempData>();
+    private readonly pathMappings = new Map<string, string>(); // Map short IDs to full paths
 
     watch(uri: vscode.Uri, options: { recursive: boolean; excludes: string[] }): vscode.Disposable {
         // For now, we'll implement a simple no-op watcher
@@ -29,19 +43,16 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
         }
 
         const content = openXMLData.files.get(filePath)!;
-        
-        // Enhanced file stat with proper type detection for XML files
-        let fileType = vscode.FileType.File;
-        
-        // For XML files, ensure they are properly recognized
         const fileName = filePath.toLowerCase();
-        if (fileName.endsWith('.xml') || fileName.endsWith('.rels')) {
-            // Mark as regular file but with specific properties that might help other extensions
-            fileType = vscode.FileType.File;
+        
+        // Log MIME type information for debugging
+        if (FileUtils.isXMLFile(fileName)) {
+            const mimeType = fileName.endsWith('.rels') ? MIME_TYPES.rels : MIME_TYPES.xml;
+            logger.debug(`XML file stat: ${filePath}`, { mimeType });
         }
         
         return {
-            type: fileType,
+            type: vscode.FileType.File,
             ctime: Date.now(),
             mtime: openXMLData.modified.has(filePath) ? Date.now() : Date.now() - 10000,
             size: content.length
@@ -60,76 +71,88 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
     }
 
     async readFile(uri: vscode.Uri): Promise<Uint8Array> {
-        console.log('🔍 ReadFile called for URI:', uri.toString());
+        logger.debug('ReadFile called for URI', { uri: uri.toString() });
         
         try {
             const { openXMLPath, filePath } = this.parseUri(uri);
-            console.log('📂 Looking for OpenXML file:', openXMLPath);
-            console.log('📄 Looking for internal file:', filePath);
+            logger.debug('Parsed URI', { openXMLPath, filePath });
             
             // Try to find the OpenXML data with different path formats
             let openXMLData = this.openXMLFiles.get(openXMLPath);
             
             if (!openXMLData) {
-                // Try normalized Windows path
-                const normalizedPath = openXMLPath.replace(/\//g, '\\');
-                openXMLData = this.openXMLFiles.get(normalizedPath);
-                console.log('🔄 Trying normalized Windows path:', normalizedPath);
+                openXMLData = this.findOpenXMLDataByPath(openXMLPath);
             }
             
             if (!openXMLData) {
-                // Try normalized Unix path
-                const unixPath = openXMLPath.replace(/\\/g, '/');
-                openXMLData = this.openXMLFiles.get(unixPath);
-                console.log('🔄 Trying normalized Unix path:', unixPath);
-            }
-            
-            if (!openXMLData) {
-                console.error('❌ OpenXML data not found for any path format');
-                console.log('🗂️ Available OpenXML files:');
-                Array.from(this.openXMLFiles.keys()).forEach((key, index) => {
-                    console.log(`  ${index + 1}. "${key}"`);
+                logger.error('OpenXML data not found', { 
+                    requestedPath: openXMLPath,
+                    availablePaths: Array.from(this.openXMLFiles.keys())
                 });
                 throw vscode.FileSystemError.FileNotFound(uri);
             }
 
-            console.log('✅ Found OpenXML data, checking for internal file:', filePath);
-            console.log('📁 Available files in archive:');
-            Array.from(openXMLData.files.keys()).forEach((key, index) => {
-                console.log(`  ${index + 1}. "${key}"`);
+            logger.debug('Found OpenXML data, checking for internal file', { 
+                filePath,
+                availableFiles: Array.from(openXMLData.files.keys())
             });
 
             // Check if file exists
             let content = openXMLData.files.get(filePath);
             
             if (!content) {
-                console.log('🔄 File not found, trying case-insensitive search...');
-                // Try case-insensitive search
-                const lowerFilePath = filePath.toLowerCase();
-                for (const [key, value] of openXMLData.files) {
-                    if (key.toLowerCase() === lowerFilePath) {
-                        console.log(`✅ Found file with different case: "${key}" vs "${filePath}"`);
-                        content = value;
-                        break;
-                    }
-                }
+                content = this.findFileByPath(openXMLData, filePath);
             }
             
             if (!content) {
-                console.error('❌ File not found even with case-insensitive search:', filePath);
+                logger.error('File not found in archive', { filePath });
                 throw vscode.FileSystemError.FileNotFound(uri);
             }
 
-            console.log('🎉 Successfully read file:', filePath, 'size:', content.length, 'bytes');
+            logger.success('Successfully read file', { filePath, size: content.length });
             return content;
             
         } catch (error) {
-            console.error('💥 Error in readFile:', error);
+            logger.error('Error in readFile', error);
             if (error instanceof vscode.FileSystemError) {
                 throw error;
             }
             throw vscode.FileSystemError.FileNotFound(uri);
         }
+    }
+
+    private findOpenXMLDataByPath(openXMLPath: string): OpenXMLTempData | undefined {
+        // Try normalized Windows path
+        const normalizedPath = openXMLPath.replace(/\//g, '\\');
+        let data = this.openXMLFiles.get(normalizedPath);
+        if (data) {
+            logger.debug('Found with normalized Windows path', { normalizedPath });
+            return data;
+        }
+        
+        // Try normalized Unix path
+        const unixPath = openXMLPath.replace(/\\/g, '/');
+        data = this.openXMLFiles.get(unixPath);
+        if (data) {
+            logger.debug('Found with normalized Unix path', { unixPath });
+            return data;
+        }
+        
+        return undefined;
+    }
+
+    private findFileByPath(openXMLData: OpenXMLTempData, filePath: string): Uint8Array | undefined {
+        logger.debug('File not found, trying case-insensitive search');
+        const lowerFilePath = filePath.toLowerCase();
+        
+        for (const [key, value] of openXMLData.files) {
+            if (key.toLowerCase() === lowerFilePath) {
+                logger.success('Found file with different case', { original: key, requested: filePath });
+                return value;
+            }
+        }
+        
+        return undefined;
     }
 
     async writeFile(uri: vscode.Uri, content: Uint8Array, options: { create: boolean; overwrite: boolean }): Promise<void> {
@@ -165,25 +188,44 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
     }
 
     async loadOpenXMLFile(originalPath: string): Promise<void> {
-        console.log('Loading OpenXML file:', originalPath);
+        logger.info('Loading OpenXML file', { path: originalPath });
         
         // Remove existing data if reloading
         if (this.openXMLFiles.has(originalPath)) {
-            console.log('Removing existing data for reload');
+            logger.debug('Removing existing data for reload');
+            await this.cleanupTempFiles(originalPath);
             this.openXMLFiles.delete(originalPath);
         }
         
-        const openXMLData = {
+        // Create temporary directory for this OpenXML file
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), EXTENSION_CONFIG.tempDirPrefix));
+        logger.debug('Created temp directory', { tempDir });
+        
+        const openXMLData: OpenXMLTempData = {
             originalPath: originalPath,
+            tempDir: tempDir,
             files: new Map<string, Uint8Array>(),
-            modified: new Set<string>()
+            tempFiles: new Map<string, string>(),
+            modified: new Set<string>(),
+            watchers: []
         };
 
-        // Load all files from the OpenXML archive
-        await new Promise<void>((resolve, reject) => {
+        // Load all files from the OpenXML archive and create temp files
+        await this.extractArchiveFiles(originalPath, openXMLData);
+
+        this.openXMLFiles.set(originalPath, openXMLData);
+        logger.success('OpenXML file loaded successfully', {
+            path: originalPath,
+            filesCount: openXMLData.files.size,
+            tempFilesCount: openXMLData.tempFiles.size
+        });
+    }
+
+    private async extractArchiveFiles(originalPath: string, openXMLData: OpenXMLTempData): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
             yauzl.open(originalPath, { lazyEntries: true }, (err: Error | null, zipfile?: yauzl.ZipFile) => {
                 if (err || !zipfile) {
-                    console.error('Failed to open OpenXML file:', err);
+                    logger.error('Failed to open OpenXML file', err);
                     reject(err || new Error('Failed to open OpenXML file'));
                     return;
                 }
@@ -194,7 +236,9 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
 
                 const checkComplete = () => {
                     if (pendingReads === 0 && processedFiles === totalFiles) {
-                        console.log(`Successfully loaded ${openXMLData.files.size} files from OpenXML archive`);
+                        logger.success('Successfully loaded files from OpenXML archive', { 
+                            totalFiles: openXMLData.files.size 
+                        });
                         resolve();
                     }
                 };
@@ -206,11 +250,11 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
                         // It's a file
                         totalFiles++;
                         pendingReads++;
-                        console.log(`Processing file: ${entry.fileName}`);
+                        logger.debug('Processing file', { fileName: entry.fileName });
                         
                         zipfile.openReadStream(entry, (err: Error | null, readStream?: NodeJS.ReadableStream) => {
                             if (err || !readStream) {
-                                console.error('Failed to read entry:', entry.fileName, err);
+                                logger.error('Failed to read entry', err, { fileName: entry.fileName });
                                 pendingReads--;
                                 processedFiles++;
                                 zipfile.readEntry();
@@ -224,10 +268,19 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
                                 chunks.push(chunk);
                             });
 
-                            readStream.on('end', () => {
+                            readStream.on('end', async () => {
                                 const content = Buffer.concat(chunks);
                                 openXMLData.files.set(entry.fileName, new Uint8Array(content));
-                                console.log(`✅ Loaded file: ${entry.fileName} (${content.length} bytes)`);
+                                
+                                // Create temporary file on disk for XML files
+                                if (FileUtils.isXMLFile(entry.fileName)) {
+                                    await this.createTempFile(openXMLData, entry.fileName, content);
+                                }
+                                
+                                logger.debug('Loaded file', { 
+                                    fileName: entry.fileName, 
+                                    size: content.length 
+                                });
                                 
                                 pendingReads--;
                                 processedFiles++;
@@ -236,7 +289,7 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
                             });
 
                             readStream.on('error', (err: Error) => {
-                                console.error('❌ Stream error for file:', entry.fileName, err);
+                                logger.error('Stream error for file', err, { fileName: entry.fileName });
                                 pendingReads--;
                                 processedFiles++;
                                 zipfile.readEntry();
@@ -245,102 +298,192 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
                         });
                     } else {
                         // It's a directory, skip
-                        console.log(`Skipping directory: ${entry.fileName}`);
+                        logger.debug('Skipping directory', { dirName: entry.fileName });
                         zipfile.readEntry();
                     }
                 });
 
                 zipfile.on('end', () => {
-                    console.log(`📁 Finished scanning archive. Found ${totalFiles} files total.`);
+                    logger.debug('Finished scanning archive', { totalFiles });
                     checkComplete();
                 });
 
                 zipfile.on('error', (err: Error) => {
-                    console.error('❌ ZipFile error:', err);
+                    logger.error('ZipFile error', err);
                     reject(err);
                 });
             });
         });
-
-        this.openXMLFiles.set(originalPath, openXMLData);
-        console.log('🎉 OpenXML file stored with key:', originalPath);
-        console.log('📋 Final loaded files count:', openXMLData.files.size);
-        console.log('📁 All loaded files:');
-        Array.from(openXMLData.files.keys()).forEach((key, index) => {
-            console.log(`  ${index + 1}. "${key}"`);
-        });
     }
 
-    private async loadFileFromOpenXML(openXMLPath: string, filePath: string): Promise<void> {
+    private async createTempFile(openXMLData: OpenXMLTempData, internalPath: string, content: Buffer): Promise<void> {
+        try {
+            // Create directory structure in temp folder
+            const tempFilePath = path.join(openXMLData.tempDir, internalPath);
+            const tempDir = path.dirname(tempFilePath);
+            
+            // Ensure directory exists
+            fs.mkdirSync(tempDir, { recursive: true });
+            
+            // Write file to temp location
+            fs.writeFileSync(tempFilePath, content);
+            
+            // Store mapping
+            openXMLData.tempFiles.set(internalPath, tempFilePath);
+            
+            // Set up Node.js file watcher with debouncing
+            let timeoutId: NodeJS.Timeout | null = null;
+            
+            const watcher = fs.watch(tempFilePath, (eventType, filename) => {
+                logger.debug('Temp file event', { eventType, path: tempFilePath });
+                
+                // Debounce - wait before syncing
+                if (timeoutId) {
+                    clearTimeout(timeoutId);
+                }
+                
+                timeoutId = setTimeout(async () => {
+                    try {
+                        await this.syncTempFileBack(openXMLData, internalPath);
+                    } catch (error) {
+                        logger.error('Failed to sync after file change', error);
+                    }
+                }, SYNC_CONFIG.debounceDelayMs);
+            });
+            
+            watcher.on('error', (error) => {
+                logger.error('Watcher error', error, { path: tempFilePath });
+            });
+            
+            openXMLData.watchers.push(watcher);
+            
+            logger.debug('Created temp file with watcher', { 
+                internalPath, 
+                tempFilePath 
+            });
+            
+        } catch (error) {
+            logger.error('Failed to create temp file', error, { internalPath });
+        }
+    }
+
+    private async syncTempFileBack(openXMLData: OpenXMLTempData, internalPath: string): Promise<void> {
+        try {
+            const tempFilePath = openXMLData.tempFiles.get(internalPath);
+            if (!tempFilePath || !fs.existsSync(tempFilePath)) {
+                logger.warn('Temp file not found for sync', { tempFilePath });
+                return;
+            }
+            
+            // Get file stats to check if it was recently modified
+            const stats = fs.statSync(tempFilePath);
+            const now = Date.now();
+            const modifiedTime = stats.mtime.getTime();
+            
+            // Only sync if file was modified recently
+            if (now - modifiedTime > SYNC_CONFIG.fileAgeThresholdMs) {
+                logger.debug('Temp file too old, skipping sync', { tempFilePath });
+                return;
+            }
+            
+            // Read updated content from temp file
+            const updatedContent = fs.readFileSync(tempFilePath);
+            const originalContent = openXMLData.files.get(internalPath);
+            
+            // Compare content to see if it actually changed
+            if (originalContent && Buffer.from(originalContent).equals(updatedContent)) {
+                logger.debug('No content changes detected', { internalPath });
+                return;
+            }
+            
+            // Update in-memory data
+            openXMLData.files.set(internalPath, new Uint8Array(updatedContent));
+            openXMLData.modified.add(internalPath);
+            
+            logger.success('Synced temp file back', { 
+                internalPath, 
+                size: updatedContent.length 
+            });
+            
+            // Auto-save after delay for batch processing
+            setTimeout(() => this.autoSave(openXMLData.originalPath), SYNC_CONFIG.autoSaveDelayMs);
+            
+        } catch (error) {
+            logger.error('Failed to sync temp file', error, { internalPath });
+        }
+    }
+
+    async cleanupTempFiles(openXMLPath: string): Promise<void> {
         const openXMLData = this.openXMLFiles.get(openXMLPath);
         if (!openXMLData) {
             return;
         }
-
-        // File should already be loaded, but just in case
-        if (!openXMLData.files.has(filePath)) {
-            return new Promise<void>((resolve, reject) => {
-                yauzl.open(openXMLData.originalPath, { lazyEntries: true }, (err: Error | null, zipfile?: yauzl.ZipFile) => {
-                    if (err || !zipfile) {
-                        reject(err || new Error('Failed to open OpenXML file'));
-                        return;
-                    }
-
-                    zipfile.readEntry();
-
-                    zipfile.on('entry', (entry: yauzl.Entry) => {
-                        if (entry.fileName === filePath) {
-                            zipfile.openReadStream(entry, (err: Error | null, readStream?: NodeJS.ReadableStream) => {
-                                if (err || !readStream) {
-                                    reject(err || new Error('Failed to read file stream'));
-                                    return;
-                                }
-
-                                const chunks: Buffer[] = [];
-                                readStream.on('data', (chunk: Buffer) => {
-                                    chunks.push(chunk);
-                                });
-
-                                readStream.on('end', () => {
-                                    const content = Buffer.concat(chunks);
-                                    openXMLData.files.set(filePath, new Uint8Array(content));
-                                    resolve();
-                                });
-                            });
-                        } else {
-                            zipfile.readEntry();
-                        }
-                    });
-
-                    zipfile.on('end', () => {
-                        reject(new Error('File not found in archive'));
-                    });
-
-                    zipfile.on('error', (err: Error) => {
-                        reject(err);
-                    });
-                });
-            });
+        
+        try {
+            // Dispose watchers
+            openXMLData.watchers.forEach(watcher => watcher.close());
+            openXMLData.watchers = [];
+            
+            // Remove temp directory
+            if (fs.existsSync(openXMLData.tempDir)) {
+                fs.rmSync(openXMLData.tempDir, { recursive: true, force: true });
+                logger.info('Cleaned up temp directory', { tempDir: openXMLData.tempDir });
+            }
+            
+        } catch (error) {
+            logger.error('Failed to cleanup temp files', error);
         }
+    }
+
+    getTempFilePath(openXMLPath: string, internalPath: string): string | undefined {
+        const openXMLData = this.openXMLFiles.get(openXMLPath);
+        return openXMLData?.tempFiles.get(internalPath);
     }
 
     async saveChanges(openXMLPath: string): Promise<void> {
         const openXMLData = this.openXMLFiles.get(openXMLPath);
-        if (!openXMLData || openXMLData.modified.size === 0) {
+        if (!openXMLData) {
+            logger.warn('No OpenXML data found for path', { openXMLPath });
+            return;
+        }
+
+        logger.info('Starting save process', { 
+            openXMLPath,
+            modifiedFilesBefore: Array.from(openXMLData.modified),
+            tempFilesCount: openXMLData.tempFiles.size
+        });
+
+        // Force sync all temporary files before saving
+        await this.syncAllTempFiles(openXMLData);
+
+        logger.debug('Modified files after sync', { 
+            modifiedFilesAfter: Array.from(openXMLData.modified) 
+        });
+
+        if (openXMLData.modified.size === 0) {
+            logger.info('No changes to save');
             return;
         }
 
         // Create a backup
         const backupPath = openXMLPath + '.backup';
         fs.copyFileSync(openXMLPath, backupPath);
+        logger.debug('Created backup', { backupPath });
 
         try {
             // Create new ZIP file
             const zipFile = new yazl.ZipFile();
             
+            logger.debug('Adding files to ZIP');
             // Add all files to the new ZIP
             for (const [filePath, content] of openXMLData.files) {
                 zipFile.addBuffer(Buffer.from(content), filePath);
+                const isModified = openXMLData.modified.has(filePath);
+                logger.debug('Added file to ZIP', { 
+                    filePath, 
+                    size: content.length, 
+                    isModified 
+                });
             }
 
             zipFile.end();
@@ -365,16 +508,52 @@ export class OpenXMLFileSystemProvider implements vscode.FileSystemProvider {
             // Clear modified set
             openXMLData.modified.clear();
 
+            logger.success('OpenXML file saved successfully', { openXMLPath });
             vscode.window.showInformationMessage(`OpenXML file saved: ${path.basename(openXMLPath)}`);
 
         } catch (error) {
+            logger.error('Save failed', error);
             // Restore from backup
             if (fs.existsSync(backupPath)) {
                 fs.copyFileSync(backupPath, openXMLPath);
                 fs.unlinkSync(backupPath);
+                logger.info('Restored from backup');
             }
             throw error;
         }
+    }
+
+    private async syncAllTempFiles(openXMLData: OpenXMLTempData): Promise<void> {
+        console.log('🔄 Force syncing all temporary files...');
+        
+        for (const [internalPath, tempFilePath] of openXMLData.tempFiles) {
+            try {
+                if (fs.existsSync(tempFilePath)) {
+                    const tempStat = fs.statSync(tempFilePath);
+                    const originalContent = openXMLData.files.get(internalPath);
+                    
+                    if (originalContent) {
+                        // Compare file modification time or content
+                        const updatedContent = fs.readFileSync(tempFilePath);
+                        
+                        // Compare content to detect changes
+                        if (!Buffer.from(originalContent).equals(updatedContent)) {
+                            console.log(`📝 Detected changes in temp file: ${internalPath}`);
+                            openXMLData.files.set(internalPath, new Uint8Array(updatedContent));
+                            openXMLData.modified.add(internalPath);
+                        } else {
+                            console.log(`✅ No changes in temp file: ${internalPath}`);
+                        }
+                    }
+                } else {
+                    console.log(`⚠️ Temp file not found: ${tempFilePath}`);
+                }
+            } catch (error) {
+                console.error(`❌ Failed to sync temp file ${internalPath}:`, error);
+            }
+        }
+        
+        console.log('🔄 Finished syncing temporary files');
     }
 
     private async autoSave(openXMLPath: string): Promise<void> {
