@@ -1,268 +1,71 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as yauzl from 'yauzl';
+import * as os from 'os';
+import * as fs from 'fs';
 
-export interface OpenXMLTreeItem {
-    label: string;
-    fullPath: string;
-    isDirectory: boolean;
-    size?: number;
-    children?: OpenXMLTreeItem[];
-    openXMLPath?: string; // Add reference to parent OpenXML file
-    isOpenXMLRoot?: boolean; // Mark if this is a root OpenXML file node
-}
+export class OpenXMLTreeItem extends vscode.TreeItem {
+    public fullPath: string;
+    public isDirectory: boolean;
+    public size?: number;
+    public children?: OpenXMLTreeItem[];
+    public openXMLPath?: string; // Add reference to parent OpenXML file
+    public isOpenXMLRoot?: boolean; // Mark if this is a root OpenXML file node
 
-export class OpenXMLTreeDataProvider implements vscode.TreeDataProvider<OpenXMLTreeItem> {
-    private _onDidChangeTreeData: vscode.EventEmitter<OpenXMLTreeItem | undefined | null | void> = new vscode.EventEmitter<OpenXMLTreeItem | undefined | null | void>();
-    readonly onDidChangeTreeData: vscode.Event<OpenXMLTreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
+    constructor(
+        label: string,
+        fullPath: string,
+        isDirectory: boolean,
+        openXMLPath?: string,
+        size?: number,
+        isOpenXMLRoot?: boolean
+    ) {
+        // Определяем состояние сворачивания на основе типа элемента
+        const collapsibleState = (isDirectory || isOpenXMLRoot) 
+            ? vscode.TreeItemCollapsibleState.Collapsed 
+            : vscode.TreeItemCollapsibleState.None;
 
-    private openXMLFiles: Map<string, OpenXMLTreeItem[]> = new Map(); // Store multiple files
+        super(label, collapsibleState);
 
-    constructor() {}
+        this.fullPath = fullPath;
+        this.isDirectory = isDirectory;
+        this.openXMLPath = openXMLPath;
+        this.size = size;
+        this.isOpenXMLRoot = isOpenXMLRoot;
+        this.children = isDirectory || isOpenXMLRoot ? [] : undefined;
 
-    refresh(): void {
-        this._onDidChangeTreeData.fire();
+        // Настройка иконок и команд в зависимости от типа элемента
+        this.setupItem();
     }
 
-    async addOpenXMLFile(filePath: string): Promise<void> {
-        console.log('Adding OpenXML file to tree:', filePath);
-        try {
-            const treeData = await this.parseOpenXMLStructure(filePath);
-            this.openXMLFiles.set(filePath, treeData);
-            this.refresh();
-            console.log('✅ OpenXML file added to tree successfully');
-        } catch (error) {
-            console.error('❌ Failed to add OpenXML file to tree:', error);
-            throw error;
-        }
-    }
-
-    async removeOpenXMLFile(filePath: string): Promise<void> {
-        console.log('Removing OpenXML file from tree:', filePath);
-        this.openXMLFiles.delete(filePath);
-        this.refresh();
-        console.log('✅ OpenXML file removed from tree');
-    }
-
-    async refreshAll(): Promise<void> {
-        console.log('Refreshing all OpenXML files in tree');
-        const filePaths = Array.from(this.openXMLFiles.keys());
-        this.openXMLFiles.clear();
-        
-        for (const filePath of filePaths) {
-            try {
-                await this.addOpenXMLFile(filePath);
-            } catch (error) {
-                console.error('Failed to refresh file:', filePath, error);
-            }
-        }
-    }
-
-    // Legacy method for compatibility
-    async loadOpenXMLFile(filePath: string): Promise<void> {
-        await this.addOpenXMLFile(filePath);
-    }
-
-    getTreeItem(element: OpenXMLTreeItem): vscode.TreeItem {
-        const treeItem = new vscode.TreeItem(
-            element.label,
-            element.isDirectory || element.isOpenXMLRoot ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None
-        );
-
-        if (element.isOpenXMLRoot) {
-            // This is a root OpenXML file node
-            treeItem.iconPath = new vscode.ThemeIcon('file-zip');
-            treeItem.contextValue = 'openxmlFile';
-            treeItem.tooltip = `OpenXML File: ${element.openXMLPath}`;
-            treeItem.description = path.basename(element.openXMLPath || '');
-        } else if (!element.isDirectory) {
-            // This is a file inside the archive - set specific icons based on file type
-            treeItem.command = {
+    private setupItem(): void {
+        if (this.isOpenXMLRoot) {
+            // Это корневой узел OpenXML файла
+            this.iconPath = new vscode.ThemeIcon('file-zip');
+            this.contextValue = 'openxmlFile';
+            this.tooltip = `OpenXML File: ${this.openXMLPath}`;
+            this.description = path.basename(this.openXMLPath || '');
+        } else if (!this.isDirectory) {
+            // Это файл внутри архива
+            this.command = {
                 command: 'openxmleditor.openXmlFile',
                 title: 'Open File',
-                arguments: [element]
+                arguments: [this]
             };
-            treeItem.contextValue = 'xmlFile';
+            this.contextValue = 'xmlFile';
             
-            // Set icon based on file type and location
-            treeItem.iconPath = this.getFileIcon(element.fullPath);
+            // Устанавливаем иконку на основе типа файла
+            this.iconPath = this.getFileIcon(this.fullPath);
             
-            // Add size info to description
-            if (element.size !== undefined) {
-                treeItem.description = this.formatSize(element.size);
+            // Добавляем информацию о размере
+            if (this.size !== undefined) {
+                this.description = this.formatSize(this.size);
             }
         } else {
-            // This is a directory - set icon based on directory type
-            treeItem.iconPath = this.getDirectoryIcon(element.fullPath);
-            treeItem.contextValue = 'folder';
+            // Это директория
+            this.iconPath = this.getDirectoryIcon(this.fullPath);
+            this.contextValue = 'folder';
         }
-
-        return treeItem;
-    }
-
-    getChildren(element?: OpenXMLTreeItem): Thenable<OpenXMLTreeItem[]> {
-        if (!element) {
-            // Return root nodes (one for each opened OpenXML file)
-            const rootNodes: OpenXMLTreeItem[] = [];
-            
-            for (const [filePath, treeData] of this.openXMLFiles) {
-                const rootNode: OpenXMLTreeItem = {
-                    label: path.basename(filePath),
-                    fullPath: filePath,
-                    isDirectory: false,
-                    isOpenXMLRoot: true,
-                    openXMLPath: filePath,
-                    children: treeData
-                };
-                rootNodes.push(rootNode);
-            }
-            
-            return Promise.resolve(rootNodes);
-        }
-
-        if (element.isOpenXMLRoot) {
-            // Return children of the OpenXML file
-            return Promise.resolve(element.children || []);
-        }
-
-        return Promise.resolve(element.children || []);
-    }
-
-    private async parseOpenXMLStructure(filePath: string): Promise<OpenXMLTreeItem[]> {
-        return new Promise((resolve, reject) => {
-            const items: OpenXMLTreeItem[] = [];
-            const pathMap = new Map<string, OpenXMLTreeItem>();
-
-            yauzl.open(filePath, { lazyEntries: true }, (err: Error | null, zipfile?: yauzl.ZipFile) => {
-                if (err || !zipfile) {
-                    reject(err || new Error('Failed to open zip file'));
-                    return;
-                }
-
-                zipfile.readEntry();
-
-                zipfile.on('entry', (entry: yauzl.Entry) => {
-                    const fullPath = entry.fileName;
-                    const isDirectory = fullPath.endsWith('/');
-                    
-                    if (isDirectory) {
-                        // Handle directory
-                        const dirItem: OpenXMLTreeItem = {
-                            label: path.basename(fullPath.slice(0, -1)) || fullPath.slice(0, -1),
-                            fullPath: fullPath,
-                            isDirectory: true,
-                            openXMLPath: filePath,
-                            children: []
-                        };
-                        
-                        pathMap.set(fullPath, dirItem);
-                        
-                        // Add to parent or root
-                        const parentPath = this.getParentPath(fullPath);
-                        if (parentPath && pathMap.has(parentPath)) {
-                            pathMap.get(parentPath)!.children!.push(dirItem);
-                        } else if (!parentPath) {
-                            items.push(dirItem);
-                        }
-                    } else {
-                        // Handle file
-                        const fileItem: OpenXMLTreeItem = {
-                            label: path.basename(fullPath),
-                            fullPath: fullPath,
-                            isDirectory: false,
-                            size: entry.uncompressedSize,
-                            openXMLPath: filePath
-                        };
-                        
-                        // Ensure parent directories exist
-                        const parentPath = this.getParentPath(fullPath + '/');
-                        if (parentPath) {
-                            this.ensureParentExists(parentPath, pathMap, items, filePath);
-                            if (pathMap.has(parentPath)) {
-                                pathMap.get(parentPath)!.children!.push(fileItem);
-                            }
-                        } else {
-                            items.push(fileItem);
-                        }
-                    }
-
-                    zipfile.readEntry();
-                });
-
-                zipfile.on('end', () => {
-                    // Sort items: directories first, then files
-                    this.sortTreeItems(items);
-                    resolve(items);
-                });
-
-                zipfile.on('error', (err: Error) => {
-                    reject(err);
-                });
-            });
-        });
-    }
-
-    private getParentPath(fullPath: string): string | null {
-        const parts = fullPath.split('/').filter(p => p);
-        if (parts.length <= 1) {
-            return null;
-        }
-        return parts.slice(0, -1).join('/') + '/';
-    }
-
-    private ensureParentExists(parentPath: string, pathMap: Map<string, OpenXMLTreeItem>, rootItems: OpenXMLTreeItem[], openXMLPath: string): void {
-        if (pathMap.has(parentPath)) {
-            return;
-        }
-
-        const parts = parentPath.split('/').filter(p => p);
-        let currentPath = '';
-        
-        for (let i = 0; i < parts.length; i++) {
-            currentPath += parts[i] + '/';
-            
-            if (!pathMap.has(currentPath)) {
-                const dirItem: OpenXMLTreeItem = {
-                    label: parts[i],
-                    fullPath: currentPath,
-                    isDirectory: true,
-                    openXMLPath: openXMLPath,
-                    children: []
-                };
-                
-                pathMap.set(currentPath, dirItem);
-                
-                if (i === 0) {
-                    rootItems.push(dirItem);
-                } else {
-                    const parentDir = parts.slice(0, i).join('/') + '/';
-                    if (pathMap.has(parentDir)) {
-                        pathMap.get(parentDir)!.children!.push(dirItem);
-                    }
-                }
-            }
-        }
-    }
-
-    private sortTreeItems(items: OpenXMLTreeItem[]): void {
-        items.sort((a, b) => {
-            // Directories first
-            if (a.isDirectory && !b.isDirectory) {
-                return -1;
-            }
-            if (!a.isDirectory && b.isDirectory) {
-                return 1;
-            }
-            // Then alphabetically
-            return a.label.localeCompare(b.label);
-        });
-
-        // Recursively sort children
-        items.forEach(item => {
-            if (item.children) {
-                this.sortTreeItems(item.children);
-            }
-        });
     }
 
     private formatSize(bytes: number): string {
@@ -272,16 +75,6 @@ export class OpenXMLTreeDataProvider implements vscode.TreeDataProvider<OpenXMLT
         }
         const i = Math.floor(Math.log(bytes) / Math.log(1024));
         return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
-    }
-
-    getCurrentFilePaths(): string[] {
-        return Array.from(this.openXMLFiles.keys());
-    }
-
-    // Legacy method for compatibility
-    getCurrentFilePath(): string | undefined {
-        const paths = this.getCurrentFilePaths();
-        return paths.length > 0 ? paths[0] : undefined;
     }
 
     private getFileIcon(filePath: string): vscode.ThemeIcon {
@@ -414,5 +207,237 @@ export class OpenXMLTreeDataProvider implements vscode.TreeDataProvider<OpenXMLT
         
         // Default folder icon
         return new vscode.ThemeIcon('folder');
+    }
+}
+
+export class OpenXMLTreeDataProvider implements vscode.TreeDataProvider<OpenXMLTreeItem> {
+    private _onDidChangeTreeData: vscode.EventEmitter<OpenXMLTreeItem | undefined | null | void> = new vscode.EventEmitter<OpenXMLTreeItem | undefined | null | void>();
+    readonly onDidChangeTreeData: vscode.Event<OpenXMLTreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
+
+    private openXMLFiles: Map<string, OpenXMLTreeItem[]> = new Map(); // Store multiple files
+
+    constructor() {}
+
+    refresh(): void {
+        this._onDidChangeTreeData.fire();
+    }
+
+    async addOpenXMLFile(filePath: string): Promise<void> {
+        console.log('Adding OpenXML file to tree:', filePath);
+        try {
+            const treeData = await this.parseOpenXMLStructure(filePath);
+            this.openXMLFiles.set(filePath, treeData);
+            this.refresh();
+            console.log('✅ OpenXML file added to tree successfully');
+        } catch (error) {
+            console.error('❌ Failed to add OpenXML file to tree:', error);
+            throw error;
+        }
+    }
+
+    async removeOpenXMLFile(filePath: string): Promise<void> {
+        console.log('Removing OpenXML file from tree:', filePath);
+        this.openXMLFiles.delete(filePath);
+        this.refresh();
+        console.log('✅ OpenXML file removed from tree');
+    }
+
+    async refreshAll(): Promise<void> {
+        console.log('Refreshing all OpenXML files in tree');
+        const filePaths = Array.from(this.openXMLFiles.keys());
+        this.openXMLFiles.clear();
+        
+        for (const filePath of filePaths) {
+            try {
+                await this.addOpenXMLFile(filePath);
+            } catch (error) {
+                console.error('Failed to refresh file:', filePath, error);
+            }
+        }
+    }
+
+    // Legacy method for compatibility
+    async loadOpenXMLFile(filePath: string): Promise<void> {
+        await this.addOpenXMLFile(filePath);
+    }
+
+    getTreeItem(element: OpenXMLTreeItem): vscode.TreeItem {
+        return element;
+    }
+
+    getChildren(element?: OpenXMLTreeItem): Thenable<OpenXMLTreeItem[]> {
+        if (!element) {
+            // Return root nodes (one for each opened OpenXML file)
+            const rootNodes: OpenXMLTreeItem[] = [];
+            
+            for (const [filePath, treeData] of this.openXMLFiles) {
+                const rootNode = new OpenXMLTreeItem(
+                    path.basename(filePath),
+                    filePath,
+                    false, // isDirectory
+                    filePath, // openXMLPath
+                    undefined, // size
+                    true // isOpenXMLRoot
+                );
+                rootNode.children = treeData;
+                rootNodes.push(rootNode);
+            }
+            
+            return Promise.resolve(rootNodes);
+        }
+
+        if (element.isOpenXMLRoot) {
+            // Return children of the OpenXML file
+            return Promise.resolve(element.children || []);
+        }
+
+        return Promise.resolve(element.children || []);
+    }
+
+    private async parseOpenXMLStructure(filePath: string): Promise<OpenXMLTreeItem[]> {
+        return new Promise((resolve, reject) => {
+            const items: OpenXMLTreeItem[] = [];
+            const pathMap = new Map<string, OpenXMLTreeItem>();
+
+            yauzl.open(filePath, { lazyEntries: true }, (err: Error | null, zipfile?: yauzl.ZipFile) => {
+                if (err || !zipfile) {
+                    reject(err || new Error('Failed to open zip file'));
+                    return;
+                }
+
+                zipfile.readEntry();
+
+                zipfile.on('entry', (entry: yauzl.Entry) => {
+                    const fullPath = entry.fileName;
+                    const isDirectory = fullPath.endsWith('/');
+                    
+                    if (isDirectory) {
+                        // Handle directory
+                        const dirItem = new OpenXMLTreeItem(
+                            path.basename(fullPath.slice(0, -1)) || fullPath.slice(0, -1),
+                            fullPath,
+                            true, // isDirectory
+                            filePath // openXMLPath
+                        );
+                        
+                        pathMap.set(fullPath, dirItem);
+                        
+                        // Add to parent or root
+                        const parentPath = this.getParentPath(fullPath);
+                        if (parentPath && pathMap.has(parentPath)) {
+                            pathMap.get(parentPath)!.children!.push(dirItem);
+                        } else if (!parentPath) {
+                            items.push(dirItem);
+                        }
+                    } else {
+                        // Handle file
+                        const fileItem = new OpenXMLTreeItem(
+                            path.basename(fullPath),
+                            fullPath,
+                            false, // isDirectory
+                            filePath, // openXMLPath
+                            entry.uncompressedSize // size
+                        );
+                        
+                        // Ensure parent directories exist
+                        const parentPath = this.getParentPath(fullPath + '/');
+                        if (parentPath) {
+                            this.ensureParentExists(parentPath, pathMap, items, filePath);
+                            if (pathMap.has(parentPath)) {
+                                pathMap.get(parentPath)!.children!.push(fileItem);
+                            }
+                        } else {
+                            items.push(fileItem);
+                        }
+                    }
+
+                    zipfile.readEntry();
+                });
+
+                zipfile.on('end', () => {
+                    // Sort items: directories first, then files
+                    this.sortTreeItems(items);
+                    resolve(items);
+                });
+
+                zipfile.on('error', (err: Error) => {
+                    reject(err);
+                });
+            });
+        });
+    }
+
+    private getParentPath(fullPath: string): string | null {
+        const parts = fullPath.split('/').filter(p => p);
+        if (parts.length <= 1) {
+            return null;
+        }
+        return parts.slice(0, -1).join('/') + '/';
+    }
+
+    private ensureParentExists(parentPath: string, pathMap: Map<string, OpenXMLTreeItem>, rootItems: OpenXMLTreeItem[], openXMLPath: string): void {
+        if (pathMap.has(parentPath)) {
+            return;
+        }
+
+        const parts = parentPath.split('/').filter(p => p);
+        let currentPath = '';
+        
+        for (let i = 0; i < parts.length; i++) {
+            currentPath += parts[i] + '/';
+            
+            if (!pathMap.has(currentPath)) {
+                const dirItem = new OpenXMLTreeItem(
+                    parts[i],
+                    currentPath,
+                    true, // isDirectory
+                    openXMLPath // openXMLPath
+                );
+                
+                pathMap.set(currentPath, dirItem);
+                
+                if (i === 0) {
+                    rootItems.push(dirItem);
+                } else {
+                    const parentDir = parts.slice(0, i).join('/') + '/';
+                    if (pathMap.has(parentDir)) {
+                        pathMap.get(parentDir)!.children!.push(dirItem);
+                    }
+                }
+            }
+        }
+    }
+
+    private sortTreeItems(items: OpenXMLTreeItem[]): void {
+        items.sort((a, b) => {
+            // Directories first
+            if (a.isDirectory && !b.isDirectory) {
+                return -1;
+            }
+            if (!a.isDirectory && b.isDirectory) {
+                return 1;
+            }
+            // Then alphabetically - используем свойство label как строку
+            const labelA = typeof a.label === 'string' ? a.label : a.label?.label || '';
+            const labelB = typeof b.label === 'string' ? b.label : b.label?.label || '';
+            return labelA.localeCompare(labelB);
+        });
+
+        // Recursively sort children
+        items.forEach(item => {
+            if (item.children) {
+                this.sortTreeItems(item.children);
+            }
+        });
+    }
+
+    getCurrentFilePaths(): string[] {
+        return Array.from(this.openXMLFiles.keys());
+    }
+
+    // Legacy method for compatibility
+    getCurrentFilePath(): string | undefined {
+        const paths = this.getCurrentFilePaths();
+        return paths.length > 0 ? paths[0] : undefined;
     }
 } 

@@ -12,13 +12,15 @@ All notable changes to the OpenXML Editor extension will be documented in this f
 - **File Utilities**: Extracted file operations into reusable utility class
 - **XML Formatter Service**: Moved XML formatting logic into dedicated service class
 - **Better Error Handling**: Comprehensive error handling throughout the codebase
+- **TreeItem Inheritance**: OpenXMLTreeItem now inherits from vscode.TreeItem for better integration and less code duplication
 
 #### 🧹 Code Cleanup
-- **Removed Code Duplication**: Eliminated duplicate logic across files
+- **Removed Code Duplication**: Eliminated duplicate logic across files, especially in tree item creation
 - **Removed Dead Code**: Deleted unused methods and interfaces
 - **Consistent Naming**: Applied consistent naming conventions
-- **Type Safety**: Improved TypeScript usage with proper types
+- **Type Safety**: Improved TypeScript usage with proper types and class inheritance
 - **Magic Numbers**: Replaced all magic numbers with named constants
+- **Simplified TreeDataProvider**: getTreeItem() method now simply returns the element directly
 
 #### 📁 New File Structure
 ```

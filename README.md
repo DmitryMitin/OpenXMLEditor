@@ -112,9 +112,10 @@ All commands are available through Command Palette (`Ctrl+Shift+P`):
 ### Architecture
 - **Temporary File System**: Extracts XML files to real temporary directories
 - **Multi-layer Sync**: Node.js file watchers + VS Code save events
-- **Tree Data Provider**: For displaying structure in sidebar
+- **Tree Data Provider**: For displaying structure in sidebar with inherited TreeItem classes
 - **File System Provider**: For URI handling and file operations
 - **Debounced Auto-save**: Smart saving with change detection
+- **Object-Oriented Design**: OpenXMLTreeItem inherits from vscode.TreeItem for better VS Code integration
 
 ### Sync Mechanisms
 1. **Node.js File Watchers**: Real-time file change detection with debouncing
