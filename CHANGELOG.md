@@ -4,7 +4,7 @@ All notable changes to the OpenXML Editor extension will be documented in this f
 
 ## [0.2.0] - 2024-12-19
 
-### 🔧 Major Refactoring - Senior Developer Code Quality Improvements
+### 🔧 Major Refactoring
 
 #### ✨ New Architecture
 - **Centralized Constants**: Created `src/constants.ts` with all configuration values
